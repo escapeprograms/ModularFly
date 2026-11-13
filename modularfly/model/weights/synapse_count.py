@@ -18,3 +18,7 @@ class SynapseCountWeights(nn.Module):
 
     def forward(self) -> torch.Tensor:
         return self.weights
+
+    def drift_penalty(self) -> torch.Tensor:
+        """Zero (0-dim, no grad): there are no trainable parameters to drift."""
+        return self.weights.new_zeros(())

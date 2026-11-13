@@ -4,23 +4,18 @@ from functools import partial
 import pytest
 import torch
 
-from modularfly.config import EmbeddingConfig, InterpretabilityConfig
+from modularfly.config import InterpretabilityConfig
 from modularfly.interpretability.neurons import (
     activation_grid, all_pairs, cluster_by_frequency, neuron_spectra,
     readout_window_mean, state_at_step,
 )
-from modularfly.model.end_to_end.split_input import SplitInputModel
-from modularfly.model.weights.signed_edge import SignedEdgeWeights
-from tests.conftest import SMALL_DYN, make_rnn
+from tests.conftest import SMALL_DYN, SMALL_P as P, make_model as make_group_model, trainable_fly
 
-P = 7
 IDX = torch.tensor([3, 7, 11])
 
 
 def make_model(graph):
-    weights = SignedEdgeWeights(graph, 1.0, torch.Generator().manual_seed(0))
-    rnn, _, _ = make_rnn(graph, weights)
-    return SplitInputModel(rnn, EmbeddingConfig(modulus=P), torch.Generator().manual_seed(0))
+    return make_group_model(graph, trainable_fly(graph))
 
 
 def readout_grid(model, neuron_idx, pair_chunk):

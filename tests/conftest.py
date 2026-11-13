@@ -1,14 +1,22 @@
 """Tiny synthetic graphs; no FlyWire data needed."""
+from dataclasses import replace
+
 import pytest
 import torch
 
-from modularfly.config import DynamicsConfig
+from modularfly.config import DynamicsConfig, EmbeddingConfig, InterfaceConfig
 from modularfly.data.graph import ConnectomeGraph
 from modularfly.data.groups import select_neurons
+from modularfly.experiments.fly_model import build_group_interface_model
+from modularfly.model.end_to_end.group_interface import GroupInterfaceModel
 from modularfly.model.fly.connectome import ConnectomeRNN
+from modularfly.model.weights.signed_edge import SignedEdgeWeights
 
 LEVELS = ("flow", "super_class", "cell_class", "cell_sub_class", "supertype", "cell_type")
 SMALL_DYN = DynamicsConfig(n_steps=6, readout_steps=2, propagate_chunk_edges=32)
+SMALL_P = 7  # modulus for the GroupInterfaceModel tests
+SMALL_EMB = EmbeddingConfig(modulus=SMALL_P, channels_per_token=2)  # 4 channels
+SMALL_INTERFACE = InterfaceConfig(input_group_size=3, output_group_size=2)  # 12 inputs, 14 outputs of 40
 
 
 def random_graph(n_neurons: int, n_edges: int, seed: int) -> ConnectomeGraph:
@@ -40,6 +48,19 @@ def make_rnn(graph: ConnectomeGraph, weights: torch.nn.Module):
     inputs = select_neurons(graph, "flow", ["afferent"])
     outputs = select_neurons(graph, "flow", ["efferent"])
     return ConnectomeRNN(graph, weights, inputs, outputs, SMALL_DYN), inputs.numel(), outputs.numel()
+
+
+def make_model(graph: ConnectomeGraph, weights: torch.nn.Module,
+               seed: int = 0) -> GroupInterfaceModel:
+    """GroupInterfaceModel with SMALL_EMB / SMALL_INTERFACE; `seed` seeds both the
+    embedding init and the interface sampling."""
+    return build_group_interface_model(graph, weights, SMALL_DYN, SMALL_EMB,
+                                       replace(SMALL_INTERFACE, seed=seed), seed)
+
+
+def trainable_fly(graph: ConnectomeGraph) -> SignedEdgeWeights:
+    """Random trainable signed weights (inhibitory scale 1, seed 0)."""
+    return SignedEdgeWeights(graph, 1.0, torch.Generator().manual_seed(0))
 
 
 @pytest.fixture

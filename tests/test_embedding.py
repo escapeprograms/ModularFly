@@ -1,6 +1,6 @@
 import torch
 
-from modularfly.model.io.embedding import input_embedding, unembedding
+from modularfly.model.io.embedding import input_embedding
 
 
 def test_input_embedding_shares_one_table():
@@ -15,8 +15,3 @@ def test_input_embedding_init_std():
     std = input_embedding(1000, 64, 0.1).weight.std().item()
     assert abs(std - 0.1) < 0.01
 
-
-def test_unembedding_shape_and_no_bias():
-    layer = unembedding(12, 113)
-    assert layer(torch.randn(4, 12)).shape == (4, 113)
-    assert layer.bias is None

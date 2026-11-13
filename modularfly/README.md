@@ -4,10 +4,12 @@ The FlyWire v783 fly-brain connectome as a PyTorch recurrent network. The wiring
 
 | Folder / file | What it holds |
 |---|---|
-| [config.py](config.py) | Every tunable value (paths, thresholds, sign map, dynamics, scales, embeddings, interpretability). |
+| [config.py](config.py) | Every tunable value (paths, thresholds, sign map, dynamics, scales, embeddings, the channel-group interface, interpretability, task split, training, experiment outputs, W&B). |
 | [data/](data/README.md) | Download the raw files, build the graph, group neurons, rewire. |
-| [model/](model/README.md) | `fly/`: the recurrent network, the sparse product and scale estimates; `weights/`: the weight modules; `io/`: the token embeddings; `end_to_end/`: complete tokens-to-logits models. |
+| [model/](model/README.md) | `fly/`: the recurrent network, the sparse product and scale estimates; `weights/`: the weight modules; `io/`: the token embedding and the channel-group interface functions; `end_to_end/`: complete tokens-to-logits models. |
 | [interpretability/](interpretability/README.md) | Fourier analysis of a trained modular-addition model (Nanda et al. 2023): embedding spectra, per-neuron 2D spectra over `(a, b)`, and figures. |
+| [training/](training/README.md) | Modular-addition data (all `p²` labeled pairs, seeded train/test split), the minibatch training and evaluation loop, and checkpoint save/load. |
+| [experiments/](experiments/README.md) | Experiment composition: build the real-fly model for a weight condition, run train → per-epoch Gini → history/checkpoint → spectra report into one run directory. |
 
 Shapes used throughout: `N` neurons (139,248), `E` connections (2,700,429 at ≥5 synapses), `B` batch, `T` time steps.
 
@@ -45,15 +47,40 @@ drive = torch.randn(32, input_idx.numel()).cuda()
 readout = rnn(drive)  # drive [B, 19262] -> readout [B, 1489]
 ```
 
-For modular addition, `SplitInputModel` wraps the network with a token embedding (each number drives a random half of the input neurons) and an output layer:
+For modular addition, `GroupInterfaceModel` wraps the network with the channel-group interface of arXiv 2610.10014: a learned `[59, 22]` token embedding gives 44 channels, each copied onto its own group of 64 input neurons, and logit `k` is the mean readout of its 32-neuron output group divided by `temperature` (no learned readout weights). The groups are sampled with `sample_interface` from any connected neuron (out-degree > 0 for inputs, 129,343 candidates; in-degree > 0 for outputs, 125,184 candidates), all disjoint:
 
 ```python
-from modularfly.config import EmbeddingConfig
-from modularfly.model.end_to_end.split_input import SplitInputModel
+from modularfly.config import EmbeddingConfig, InterfaceConfig
+from modularfly.model.end_to_end.group_interface import GroupInterfaceModel
+from modularfly.model.io.interface import sample_interface
 
-model = SplitInputModel(rnn, EmbeddingConfig(), generator=torch.Generator().manual_seed(0)).cuda()
-tokens = torch.randint(0, 113, (32, 2)).cuda()
-logits = model(tokens)  # tokens [B, 2] -> logits [B, 113]
+emb, interface = EmbeddingConfig(), InterfaceConfig()
+input_groups, output_groups = sample_interface(
+    graph, 2 * emb.channels_per_token, interface.input_group_size, emb.modulus,
+    interface.output_group_size, torch.Generator().manual_seed(interface.seed))
+# input_groups [44, 64] (2,816 neurons), output_groups [59, 32] (1,888 neurons)
+group_rnn = ConnectomeRNN(graph, random, input_groups.flatten(), output_groups.flatten(), dyn)
+model = GroupInterfaceModel(group_rnn, emb, interface).cuda()
+tokens = torch.randint(0, 59, (32, 2)).cuda()
+logits = model(tokens)  # tokens [B, 2] -> logits [B, 59]
+```
+
+## Training and running an experiment
+
+`experiments/` builds the model for a weight condition and runs one experiment into `runs/<name>/` (configs, per-epoch history with Gini, checkpoint, spectra report and figures); `training/` holds the pure loop it uses. From the command line: `python scripts/run_experiment1.py --epochs 50`. In Python:
+
+```python
+from modularfly.config import EmbeddingConfig, ExperimentConfig, InterfaceConfig, InterpretabilityConfig, ScaleConfig, TaskConfig, TrainConfig
+from modularfly.experiments.fly_model import build_group_interface_model, random_trainable_weights
+from modularfly.experiments.run import run_experiment
+
+configs = {"task": TaskConfig(), "train": TrainConfig(), "embedding": EmbeddingConfig(),
+           "interface": InterfaceConfig(),
+           "interpretability": InterpretabilityConfig(), "experiment": ExperimentConfig()}
+model = build_group_interface_model(graph, random_trainable_weights(graph, ScaleConfig()), dyn,
+                                    configs["embedding"], configs["interface"],
+                                    configs["train"].seed).cuda()
+rows = run_experiment(model, configs, configs["experiment"].runs_dir / "demo", on_row=print)
 ```
 
 ## config.py
@@ -76,8 +103,8 @@ All values are dataclass fields with defaults; construct with no arguments and o
 | `nt_column`, `nt_confidence_column` | `top_nt`, `top_nt_conf` | Columns giving each neuron's transmitter and its confidence. |
 | `nt_sign` | copy of `NT_SIGN` | Transmitter → sign map. |
 | `missing_nt_sign` | `1.0` | Sign for the 602 neurons with no prediction. |
-| `input_level`, `input_labels` | `flow`, `("afferent",)` | Which neurons are inputs. |
-| `output_level`, `output_labels` | `flow`, `("efferent",)` | Which neurons are outputs. |
+| `input_level`, `input_labels` | `flow`, `("afferent",)` | Which neurons are inputs for `select_neurons` (used by `build_graph.py`, `smoke_gpu.py` and the tests). Experiment 1 does not use them: it samples its interface from any connected neuron (`InterfaceConfig`). |
+| `output_level`, `output_labels` | `flow`, `("efferent",)` | Which neurons are outputs for `select_neurons`; likewise unused by experiment 1. |
 | `download_chunk_bytes` | 1 MiB | Read size for download and md5. |
 
 **`DynamicsConfig`**
@@ -110,8 +137,19 @@ All values are dataclass fields with defaults; construct with no arguments and o
 
 | Field | Default | Meaning |
 |---|---|---|
-| `modulus` | `113` | `p`: tokens are `0..p-1` and there are `p` answers (Nanda et al. 2023). |
-| `init_std` | `1.0` | Embedding entries start `~ N(0, init_std²)`; each entry is one neuron's drive. |
+| `modulus` | `59` | `p`: tokens are `0..p-1` and there are `p` answers. |
+| `channels_per_token` | `22` | Embedding width `d` per operand; the two operands give `2d = 44` input channels (arXiv 2610.10014). |
+| `init_std` | `1.0` | Embedding entries start `~ N(0, init_std²)`; each entry is one channel's drive. |
+
+**`InterfaceConfig`** (how channels touch neurons and how neurons become logits; paper defaults)
+
+| Field | Default | Meaning |
+|---|---|---|
+| `input_group_size` | `64` | Neurons driven by each input channel (44 × 64 = 2,816 input neurons on the real fly). |
+| `output_group_size` | `32` | Neurons averaged into each class logit (59 × 32 = 1,888 output neurons). |
+| `input_amplitude` | `1.0` | Each channel value is copied onto its group times this. |
+| `temperature` | `0.1` | Logit = group-mean readout / temperature. |
+| `seed` | `0` | Interface sampling seed, independent of `TrainConfig.seed`, so the interface stays fixed across training seeds. |
 
 **`InterpretabilityConfig`**
 
@@ -125,3 +163,51 @@ All values are dataclass fields with defaults; construct with no arguments and o
 | `heatmap_size` | `(5.0, 4.5)` | Size in inches of `(a, b)` heatmaps. |
 | `dpi` | `150` | Resolution of saved figures. |
 | `figure_dir` | `figures` | Where figures are saved by default. |
+
+**`TaskConfig`**
+
+| Field | Default | Meaning |
+|---|---|---|
+| `train_fraction` | `0.5` | Share of the `p²` pairs used for training; the rest is the test set. 0.3 is Nanda 2023's grokking regime; 0.5 comes first, to check the connectome can learn and generalize at all. |
+| `seed` | `0` | Seed of the split permutation. |
+
+`p` is not repeated here; it is `EmbeddingConfig.modulus`.
+
+**`TrainConfig`**
+
+| Field | Default | Meaning |
+|---|---|---|
+| `batch_size` | `32` | Training minibatch. Backprop keeps 64 `[N, B]` states; 2.41 GB peak on the real fly. |
+| `eval_batch` | `512` | Chunk size for evaluation under `no_grad` (about 1 GB peak at 512). |
+| `lr` | `1e-3` | AdamW learning rate of the token embedding. |
+| `fly_lr` | `1e-3` | AdamW learning rate of the recurrent weights (`model.rnn`). Each `theta` moves at most about `fly_lr` per step, so 3e-3..1e-2 is worth trying. |
+| `betas` | `(0.9, 0.98)` | AdamW betas (Nanda 2023). |
+| `weight_decay` | `0.1` | Weight decay on the token embedding. AdamW shrinks it by `lr · wd` per step; 1.0 (Nanda 2023) would decay the `[59, 22]` table about 5x over a 50-epoch run. |
+| `fly_weight_decay` | `0.0` | Weight decay on the recurrent weights. At 1.0 every `theta` would shrink by 0.999 per step and silence the dynamics. |
+| `fly_penalty` | `0.0` | Coefficient on the drift penalty `sum((theta − theta_init)²)` added to the training loss: an L2 pull toward the initial fly weights instead of toward zero. The logged `train_loss` stays cross-entropy; the unweighted penalty is logged as `theta_drift`. Off (`0`) by default: 1e-3 pinned `theta` (measured drift plateau ~90, RMS 0.006 per edge) and the plateau scales ~1/lambda, so sweep 1e-6..1e-5. See [training/README.md](training/README.md#definitions). |
+| `grad_clip_norm` | `1.0` | Gradient-norm clip, applied every step (arXiv 2610.10014 clips at 1). The pre-clip norm is always logged. |
+| `n_epochs` | `50` | Epochs to train. At `p = 59` an epoch is 33 training steps of about 1.26 s each on the real fly, plus test evaluation. |
+| `seed` | `0` | Seed for model init (`torch.manual_seed`, the embedding) and batch order. The interface has its own seed (`InterfaceConfig.seed`). |
+
+**`ExperimentConfig`**
+
+| Field | Default | Meaning |
+|---|---|---|
+| `runs_dir` | `runs` | Parent folder of the run directories (gitignored). |
+| `device` | `"cuda"` | Device name, a plain string so `config.py` imports no torch. |
+| `config_name` | `config.json` | File holding every config of a run. |
+| `history_name` | `history.csv` | Per-epoch training history. |
+| `checkpoint_name` | `checkpoint.pt` | Model and optimizer state. |
+| `report_name` | `embedding_report.json` | Token-embedding spectrum summary. |
+| `figure_dir_name` | `figures` | Subfolder of the run directory for figures. |
+
+**`WandbConfig`**
+
+| Field | Default | Meaning |
+|---|---|---|
+| `entity` | `"archimedesli"` | W&B user or team that owns the project. |
+| `project` | `"ModularFly"` | W&B project the runs go to. |
+| `mode` | `"online"` | Passed straight to `wandb`: `online`, `offline` (logs locally under `wandb/`) or `disabled` (no-op, no network). |
+| `env_file` | `.env` (repo root, gitignored) | Dotenv file holding the API key. |
+| `key_variable` | `"WANDB_KEY"` | Name of the API-key variable in `env_file`. |
+| `artifact_name` | `"run-files"` | Name of the artifact holding `config.json`, `history.csv`, `embedding_report.json` and `figures/`. |

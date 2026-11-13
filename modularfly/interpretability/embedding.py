@@ -7,9 +7,8 @@ frequency's (cos, sin) rows are reduced with an L2 norm along the feature axis. 
 that has grokked modular addition concentrates this spectrum on a few key frequencies,
 so the Gini coefficient of the non-constant norms is a sparsity progress measure.
 
-SplitInputModel.unembedding.weight is an nn.Linear weight already shaped [p, n_out]
-(the opposite of Nanda's W_U [d, p] convention), so the same function applies to both
-the embedding [p, n_in // 2] and the unembedding without a transpose.
+GroupInterfaceModel's only token matrix is embedding.weight [p, channels_per_token]; its
+readout is a fixed group mean with no [p, d] weight, so there is no unembedding spectrum.
 """
 from dataclasses import dataclass
 
@@ -17,7 +16,7 @@ import torch
 
 from modularfly.config import InterpretabilityConfig
 from modularfly.interpretability.fourier import fourier_1d, fourier_basis, frequency_norms
-from modularfly.model.end_to_end.split_input import SplitInputModel
+from modularfly.model.end_to_end.group_interface import GroupInterfaceModel
 
 
 @dataclass(frozen=True)
@@ -66,11 +65,7 @@ def embedding_spectrum(weight: torch.Tensor, cfg: InterpretabilityConfig) -> Emb
     )
 
 
-def model_token_spectra(
-    model: SplitInputModel, cfg: InterpretabilityConfig
-) -> tuple[EmbeddingSpectrum, EmbeddingSpectrum]:
-    """(embedding spectrum, unembedding spectrum) of a SplitInputModel."""
-    return (
-        embedding_spectrum(model.embedding.weight, cfg),
-        embedding_spectrum(model.unembedding.weight, cfg),
-    )
+def model_embedding_spectrum(model: GroupInterfaceModel,
+                             cfg: InterpretabilityConfig) -> EmbeddingSpectrum:
+    """Fourier spectrum of a GroupInterfaceModel's token embedding [p, d]."""
+    return embedding_spectrum(model.embedding.weight, cfg)

@@ -5,12 +5,12 @@ Shapes: p = modulus, n = selected neurons, K = p // 2 frequencies, B = batch of 
 Probe pattern: a `probe` is any callable (model, tokens [B, 2]) -> [n, B] giving the
 activation of a fixed neuron list for each pair. The caller binds the neurons (and
 step) with functools.partial, e.g.
-    partial(readout_window_mean, neuron_idx=idx)        # what the unembedding sees
+    partial(readout_window_mean, neuron_idx=idx)        # what the group readout averages
     partial(state_at_step, neuron_idx=idx, step=t)      # a single time step
 so new probes plug in without changing the grid collection.
 
 Chunking: each RNN state is [N, B]. On the real fly N = 139,248, so running all
-p^2 = 12,769 pairs at once would need ~7 GB per step; pairs are therefore run in
+p^2 = 3,481 pairs (p = 59) at once would need ~1.9 GB per step; pairs are therefore run in
 slices of cfg.pair_chunk and only the selected neurons' [n, B_chunk] rows are kept.
 """
 from collections.abc import Callable, Iterator
@@ -22,9 +22,9 @@ from modularfly.config import InterpretabilityConfig
 from modularfly.interpretability.fourier import (
     block_energy, fourier_2d, fourier_basis, frequency_energy, sum_difference_energy,
 )
-from modularfly.model.end_to_end.split_input import SplitInputModel
+from modularfly.model.end_to_end.group_interface import GroupInterfaceModel
 
-Probe = Callable[[SplitInputModel, torch.Tensor], torch.Tensor]
+Probe = Callable[[GroupInterfaceModel, torch.Tensor], torch.Tensor]
 
 
 def all_pairs(p: int, device=None) -> torch.Tensor:
@@ -33,13 +33,13 @@ def all_pairs(p: int, device=None) -> torch.Tensor:
     return torch.cartesian_prod(x, x)
 
 
-def readout_window_mean(model: SplitInputModel, tokens: torch.Tensor,
+def readout_window_mean(model: GroupInterfaceModel, tokens: torch.Tensor,
                         neuron_idx: torch.Tensor) -> torch.Tensor:
-    """[n, B]: neuron activity averaged over the readout window (what the unembedding sees)."""
+    """[n, B]: neuron activity averaged over the readout window (what the group readout averages)."""
     return model.rnn.window_mean(model.drive(tokens), neuron_idx)
 
 
-def state_at_step(model: SplitInputModel, tokens: torch.Tensor,
+def state_at_step(model: GroupInterfaceModel, tokens: torch.Tensor,
                   neuron_idx: torch.Tensor, step: int) -> torch.Tensor:
     """[n, B]: h_step[neuron_idx], step 0 = first yielded state; later steps are not run."""
     n_steps = model.rnn.cfg.n_steps
@@ -50,16 +50,16 @@ def state_at_step(model: SplitInputModel, tokens: torch.Tensor,
             return h[neuron_idx]
 
 
-def iter_activation_chunks(model: SplitInputModel, cfg: InterpretabilityConfig,
+def iter_activation_chunks(model: GroupInterfaceModel, cfg: InterpretabilityConfig,
                            probe: Probe) -> Iterator[torch.Tensor]:
     """Yields probe output [n, B_chunk] for consecutive cfg.pair_chunk slices of all_pairs."""
-    pairs = all_pairs(model.embedding.num_embeddings, device=model.slots.device)
+    pairs = all_pairs(model.embedding.num_embeddings, device=model.rnn.input_idx.device)
     with torch.no_grad():
         for start in range(0, pairs.shape[0], cfg.pair_chunk):
             yield probe(model, pairs[start:start + cfg.pair_chunk])
 
 
-def activation_grid(model: SplitInputModel, cfg: InterpretabilityConfig,
+def activation_grid(model: GroupInterfaceModel, cfg: InterpretabilityConfig,
                     probe: Probe) -> torch.Tensor:
     """[n, p, p]: probe activation for every (a, b)."""
     p = model.embedding.num_embeddings

@@ -1,9 +1,11 @@
-"""Token embedding and unembedding layers for the modular-addition task.
+"""Token embedding layer for the modular-addition task.
 
-input_embedding: one table shared by both operands, LongTensor[B, 2] -> [B, 2, dim].
-unembedding: output-neuron readout [B, n_out] -> logits [B, n_tokens], no bias.
+input_embedding: one table shared by both operands, LongTensor[B, N_OPERANDS] -> [B, N_OPERANDS, dim].
+N_OPERANDS: tokens per example (a, b); the one place the two-operand assumption lives.
 """
 from torch import nn
+
+N_OPERANDS = 2
 
 
 def input_embedding(n_tokens: int, dim: int, init_std: float) -> nn.Embedding:
@@ -12,7 +14,3 @@ def input_embedding(n_tokens: int, dim: int, init_std: float) -> nn.Embedding:
     nn.init.normal_(embedding.weight, std=init_std)
     return embedding
 
-
-def unembedding(n_out: int, n_tokens: int) -> nn.Linear:
-    """Linear map from output-neuron readout to one logit per token, without bias."""
-    return nn.Linear(n_out, n_tokens, bias=False)

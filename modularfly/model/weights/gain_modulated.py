@@ -18,6 +18,10 @@ class GainModulatedWeights(nn.Module):
     def forward(self) -> torch.Tensor:
         return self.base() * self.gain()
 
+    def drift_penalty(self) -> torch.Tensor:
+        """Sum of the base and gain drift penalties."""
+        return self.base.drift_penalty() + self.gain.drift_penalty()
+
 
 class GroupGain(nn.Module):
     """forward() -> 1 + Z[edge_group]; Z starts at exactly 0. Not clamped: 1 + Z < 0
@@ -33,3 +37,7 @@ class GroupGain(nn.Module):
 
     def min_gain(self) -> torch.Tensor:
         return 1.0 + self.z.detach().min()
+
+    def drift_penalty(self) -> torch.Tensor:
+        """sum(Z^2): Z starts at exactly 0, so this is the squared drift from init."""
+        return (self.z ** 2).sum()

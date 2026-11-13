@@ -1,11 +1,7 @@
 """CLI: build the FlyWire v783 graph from data/raw/, cache it under data/processed/, and
 print counts, E/I statistics, the spectral radius of sign * syn_count and the derived w0."""
 import argparse
-import sys
 import time
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # TODO(debt-001)
 
 import torch
 

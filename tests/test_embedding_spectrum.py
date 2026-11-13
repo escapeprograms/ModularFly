@@ -8,9 +8,9 @@ from modularfly.interpretability.embedding import (
     dominant_frequencies,
     embedding_spectrum,
     gini,
-    model_token_spectra,
+    model_embedding_spectrum,
 )
-from tests.test_split_input import P, make_model, trainable_fly
+from tests.conftest import SMALL_P as P, make_model, trainable_fly
 
 
 def test_gini_one_hot_and_uniform():
@@ -42,13 +42,10 @@ def test_embedding_spectrum_synthetic():
     assert spec.gini == pytest.approx(1 - 1 / (p // 2), abs=1e-6)
 
 
-def test_model_token_spectra_shapes(small_graph):
+def test_model_embedding_spectrum_shapes(small_graph):
     model = make_model(small_graph, trainable_fly(small_graph))
-    emb, unemb = model_token_spectra(model, InterpretabilityConfig())
-    n_out = model.rnn.output_idx.numel()
-    assert emb.coeffs.shape == (P, 7)
-    assert unemb.coeffs.shape == (P, n_out)
-    for spec in (emb, unemb):
-        assert spec.freq_norms.shape == (P // 2 + 1,)
-        assert not spec.coeffs.requires_grad
-        assert not spec.freq_norms.requires_grad
+    spec = model_embedding_spectrum(model, InterpretabilityConfig())
+    assert spec.coeffs.shape == (P, 2)
+    assert spec.freq_norms.shape == (P // 2 + 1,)
+    assert not spec.coeffs.requires_grad
+    assert not spec.freq_norms.requires_grad
